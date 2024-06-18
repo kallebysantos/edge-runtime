@@ -362,7 +362,7 @@ impl Server {
             let events_path = Path::new(&events_service_path);
             let events_path_buf = events_path.to_path_buf();
 
-            let (event_worker_metric, sender) = create_events_worker(
+            let (ctx, sender) = create_events_worker(
                 events_path_buf,
                 import_map_path.clone(),
                 flags.no_module_cache,
@@ -373,13 +373,14 @@ impl Server {
             .await?;
 
             worker_events_tx = Some(sender);
-            Some(event_worker_metric)
+            Some(ctx.metric)
         } else {
             None
         };
 
         let jsx_config = jsx_module.map(|jsx_mod| JsxImportSourceConfig {
             default_specifier: jsx_specifier,
+            default_types_specifier: None,
             module: jsx_mod,
             base_url: Url::from_file_path(std::env::current_dir().unwrap()).unwrap(),
         });

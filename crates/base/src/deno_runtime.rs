@@ -5,6 +5,7 @@ use crate::rt_worker::worker::DuplexStreamEntry;
 use crate::utils::units::{bytes_to_display, mib_to_bytes};
 
 use anyhow::{anyhow, bail, Context, Error};
+use base_mem_check::{MemCheckState, WorkerHeapStatistics};
 use cooked_waker::{IntoWaker, WakeRef};
 use cpu_timer::get_thread_time;
 use ctor::ctor;
@@ -12,8 +13,8 @@ use deno_core::error::AnyError;
 use deno_core::url::Url;
 use deno_core::v8::{GCCallbackFlags, GCType, HeapStatistics, Isolate};
 use deno_core::{
-    located_script_name, serde_json, serde_v8, JsRuntime, ModuleCodeString, ModuleId,
-    PollEventLoopOptions, RuntimeOptions,
+    located_script_name, serde_json, JsRuntime, ModuleCodeString, ModuleId, PollEventLoopOptions,
+    RuntimeOptions,
 };
 use deno_http::DefaultHttpPropertyExtractor;
 use deno_tls::deno_native_certs::load_native_certs;
@@ -27,12 +28,13 @@ use once_cell::sync::{Lazy, OnceCell};
 use sb_core::http::sb_core_http;
 use sb_core::http_start::sb_core_http_start;
 use sb_core::util::sync::AtomicFlag;
-use serde::de::DeserializeOwned;
+use serde::Serialize;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::fmt;
-use std::sync::Arc;
+use std::marker::PhantomData;
+use std::sync::{Arc, RwLock};
 use std::task::Poll;
 use std::time::Duration;
 use tokio::sync::{mpsc, Notify};
@@ -70,16 +72,11 @@ static SUPABASE_UA: Lazy<String> = Lazy::new(|| {
     let deno_version = MAYBE_DENO_VERSION.get().map(|it| &**it).unwrap_or("1.0.0");
     let supabase_version = option_env!("GIT_V_TAG").unwrap_or("0.1.0");
     format!(
+        // TODO: It should be changed to a well-known name for the ecosystem.
         "Deno/{} (variant; SupabaseEdgeRuntime/{})",
         deno_version, supabase_version
     )
 });
-
-static SHOULD_DISABLE_DEPRECATED_API_WARNING: Lazy<bool> =
-    Lazy::new(|| std::env::var("DENO_NO_DEPRECATION_WARNINGS").ok().is_some());
-
-static SHOULD_USE_VERBOSE_DEPRECATED_API_WARNING: Lazy<bool> =
-    Lazy::new(|| std::env::var("DENO_VERBOSE_WARNINGS").ok().is_some());
 
 static ALLOC_CHECK_DUR: Lazy<Duration> = Lazy::new(|| {
     std::env::var("EDGE_RUNTIME_ALLOC_CHECK_INT")
@@ -88,6 +85,10 @@ static ALLOC_CHECK_DUR: Lazy<Duration> = Lazy::new(|| {
         .unwrap_or_else(|| Duration::from_millis(DEFAULT_ALLOC_CHECK_INT_MSEC))
 });
 
+// Following static variables are initialized in the cli crate.
+
+pub static SHOULD_DISABLE_DEPRECATED_API_WARNING: OnceCell<bool> = OnceCell::new();
+pub static SHOULD_USE_VERBOSE_DEPRECATED_API_WARNING: OnceCell<bool> = OnceCell::new();
 pub static MAYBE_DENO_VERSION: OnceCell<String> = OnceCell::new();
 
 #[ctor]
@@ -117,24 +118,22 @@ fn get_error_class_name(e: &AnyError) -> &'static str {
     sb_core::errors_rt::get_error_class_name(e).unwrap_or("Error")
 }
 
-#[derive(Default, Clone)]
-struct MemCheckState {
+#[derive(Default)]
+struct MemCheck {
     drop_token: CancellationToken,
     limit: Option<usize>,
     waker: Arc<AtomicWaker>,
     notify: Arc<Notify>,
-
-    #[cfg(debug_assertions)]
-    exceeded: Arc<AtomicFlag>,
+    state: Arc<RwLock<MemCheckState>>,
 }
 
-impl Drop for MemCheckState {
+impl Drop for MemCheck {
     fn drop(&mut self) {
         self.drop_token.cancel();
     }
 }
 
-impl MemCheckState {
+impl MemCheck {
     fn check(&self, isolate: &mut Isolate) -> usize {
         let Some(limit) = self.limit else {
             return 0;
@@ -156,26 +155,35 @@ impl MemCheckState {
             .saturating_add(used_heap_bytes)
             .saturating_add(external_bytes);
 
-        if total_bytes >= limit {
-            self.notify.notify_waiters();
+        let heap_stats = WorkerHeapStatistics::from(&stats);
+        let mut state = self.state.write().unwrap();
 
-            #[cfg(debug_assertions)]
-            if !self.exceeded.is_raised() {
-                self.exceeded.raise();
+        state.current = heap_stats;
+
+        if total_bytes >= limit {
+            if !state.exceeded {
+                state.exceeded = true;
             }
+
+            drop(state);
+            self.notify.notify_waiters();
         }
 
         total_bytes
     }
+}
 
-    #[allow(dead_code)]
-    #[cfg(debug_assertions)]
-    fn is_exceeded(&self) -> bool {
-        self.exceeded.is_raised()
+pub trait GetRuntimeContext {
+    fn get_runtime_context() -> impl Serialize;
+}
+
+impl GetRuntimeContext for () {
+    fn get_runtime_context() -> impl Serialize {
+        serde_json::json!(null)
     }
 }
 
-pub struct DenoRuntime {
+pub struct DenoRuntime<RuntimeContext = ()> {
     pub js_runtime: JsRuntime,
     pub env_vars: HashMap<String, String>, // TODO: does this need to be pub?
     pub conf: WorkerRuntimeOpts,
@@ -187,22 +195,27 @@ pub struct DenoRuntime {
     main_module_id: ModuleId,
     maybe_inspector: Option<Inspector>,
 
-    mem_check_state: Arc<MemCheckState>,
+    mem_check: Arc<MemCheck>,
     waker: Arc<AtomicWaker>,
+
+    _phantom_runtime_context: PhantomData<RuntimeContext>,
 }
 
-impl Drop for DenoRuntime {
+impl<RuntimeContext> Drop for DenoRuntime<RuntimeContext> {
     fn drop(&mut self) {
         if self.conf.is_user_worker() {
             self.js_runtime.v8_isolate().remove_gc_prologue_callback(
                 mem_check_gc_prologue_callback_fn,
-                Arc::as_ptr(&self.mem_check_state) as *mut _,
+                Arc::as_ptr(&self.mem_check) as *mut _,
             );
         }
     }
 }
 
-impl DenoRuntime {
+impl<RuntimeContext> DenoRuntime<RuntimeContext>
+where
+    RuntimeContext: GetRuntimeContext,
+{
     #[allow(clippy::unnecessary_literal_unwrap)]
     #[allow(clippy::arc_with_non_send_sync)]
     pub async fn new(
@@ -352,9 +365,9 @@ impl DenoRuntime {
         let mut stdio = Some(Default::default());
         if is_user_worker {
             stdio = Some(deno_io::Stdio {
-                stdin: deno_io::StdioPipe::File(std::fs::File::create("/dev/null")?),
-                stdout: deno_io::StdioPipe::File(std::fs::File::create("/dev/null")?),
-                stderr: deno_io::StdioPipe::File(std::fs::File::create("/dev/null")?),
+                stdin: deno_io::StdioPipe::file(std::fs::File::create("/dev/null")?),
+                stdout: deno_io::StdioPipe::file(std::fs::File::create("/dev/null")?),
+                stderr: deno_io::StdioPipe::file(std::fs::File::create("/dev/null")?),
             });
         }
 
@@ -362,6 +375,7 @@ impl DenoRuntime {
             eszip,
             maybe_arc_import_map,
             import_map_path,
+            maybe_inspector.is_some(),
         )
         .await?;
 
@@ -438,7 +452,7 @@ impl DenoRuntime {
         ];
 
         let mut create_params = None;
-        let mut mem_check_state = MemCheckState::default();
+        let mut mem_check = MemCheck::default();
 
         if conf.is_user_worker() {
             let memory_limit =
@@ -446,9 +460,9 @@ impl DenoRuntime {
 
             let allocator = CustomAllocator::new(memory_limit);
 
-            allocator.set_waker(mem_check_state.waker.clone());
+            allocator.set_waker(mem_check.waker.clone());
 
-            mem_check_state.limit = Some(memory_limit);
+            mem_check.limit = Some(memory_limit);
             create_params = Some(
                 deno_core::v8::CreateParams::default()
                     .heap_limits(mib_to_bytes(0) as usize, memory_limit)
@@ -456,7 +470,7 @@ impl DenoRuntime {
             )
         };
 
-        let mem_check_state = Arc::new(mem_check_state);
+        let mem_check = Arc::new(mem_check);
         let runtime_options = RuntimeOptions {
             extensions,
             is_main: true,
@@ -465,7 +479,7 @@ impl DenoRuntime {
             get_error_class_fn: Some(&get_error_class_name),
             shared_array_buffer_store: None,
             compiled_wasm_module_store: None,
-            startup_snapshot: Some(snapshot::snapshot()),
+            startup_snapshot: snapshot::snapshot(),
             module_loader: Some(module_loader),
             ..Default::default()
         };
@@ -473,9 +487,17 @@ impl DenoRuntime {
         let mut js_runtime = JsRuntime::new(runtime_options);
         let version: Option<&str> = option_env!("GIT_V_TAG");
 
+        {
+            // @andreespirela : We do this because "NODE_DEBUG" is trying to be read during
+            // initialization, But we need the gotham state to be up-to-date
+            let op_state_rc = js_runtime.op_state();
+            let mut op_state = op_state_rc.borrow_mut();
+            op_state.put::<sb_env::EnvVars>(sb_env::EnvVars::new());
+        }
+
         // Bootstrapping stage
         let script = format!(
-            "globalThis.bootstrapSBEdge({})",
+            "globalThis.bootstrapSBEdge({}, {})",
             serde_json::json!([
                 // 0: target
                 env!("TARGET"),
@@ -491,10 +513,17 @@ impl DenoRuntime {
                     .map(|it| &**it)
                     .unwrap_or("UNKNOWN"),
                 // 5: shouldDisableDeprecatedApiWarning
-                &*SHOULD_DISABLE_DEPRECATED_API_WARNING,
+                SHOULD_DISABLE_DEPRECATED_API_WARNING
+                    .get()
+                    .copied()
+                    .unwrap_or_default(),
                 // 6: shouldUseVerboseDeprecatedApiWarning
-                &*SHOULD_USE_VERBOSE_DEPRECATED_API_WARNING,
-            ])
+                SHOULD_USE_VERBOSE_DEPRECATED_API_WARNING
+                    .get()
+                    .copied()
+                    .unwrap_or_default(),
+            ]),
+            serde_json::json!(RuntimeContext::get_runtime_context())
         );
 
         if let Some(inspector) = maybe_inspector.clone() {
@@ -508,14 +537,14 @@ impl DenoRuntime {
         if is_user_worker {
             js_runtime.v8_isolate().add_gc_prologue_callback(
                 mem_check_gc_prologue_callback_fn,
-                Arc::as_ptr(&mem_check_state) as *mut _,
+                Arc::as_ptr(&mem_check) as *mut _,
                 GCType::ALL,
             );
 
             js_runtime
                 .op_state()
                 .borrow_mut()
-                .put(MemCheckWaker::from(mem_check_state.waker.clone()));
+                .put(MemCheckWaker::from(mem_check.waker.clone()));
         }
 
         js_runtime
@@ -560,14 +589,20 @@ impl DenoRuntime {
             op_state.put::<sb_env::EnvVars>(env_vars);
         }
 
-        let main_module_id = js_runtime
-            .load_main_module(&main_module_url, mod_code)
-            .await?;
+        let main_module_id = {
+            if let Some(code) = mod_code {
+                js_runtime
+                    .load_main_es_module_from_code(&main_module_url, code)
+                    .await?
+            } else {
+                js_runtime.load_main_es_module(&main_module_url).await?
+            }
+        };
 
         if is_user_worker {
             drop(rt::SUPERVISOR_RT.spawn({
-                let drop_token = mem_check_state.drop_token.clone();
-                let waker = mem_check_state.waker.clone();
+                let drop_token = mem_check.drop_token.clone();
+                let waker = mem_check.waker.clone();
 
                 async move {
                     // TODO(Nyannyacha): Should we introduce exponential
@@ -600,8 +635,10 @@ impl DenoRuntime {
             main_module_id,
             maybe_inspector,
 
-            mem_check_state,
+            mem_check,
             waker: Arc::default(),
+
+            _phantom_runtime_context: PhantomData,
         })
     }
 
@@ -692,7 +729,7 @@ impl DenoRuntime {
         let is_termination_requested = self.is_termination_requested.clone();
         let is_user_worker = self.conf.is_user_worker();
         let global_waker = self.waker.clone();
-        let mem_check_state = is_user_worker.then(|| self.mem_check_state.clone());
+        let mem_check = is_user_worker.then(|| self.mem_check.clone());
 
         let poll_result = poll_fn(|cx| unsafe {
             // INVARIANT: Only can steal current task by other threads when LIFO
@@ -766,7 +803,7 @@ impl DenoRuntime {
             }));
 
             if is_user_worker {
-                let mem_state = mem_check_state.as_ref().unwrap();
+                let mem_state = mem_check.as_ref().unwrap();
                 let total_malloced_bytes = mem_state.check(js_runtime.v8_isolate().as_mut());
 
                 mem_state.waker.register(waker);
@@ -816,19 +853,31 @@ impl DenoRuntime {
         self.maybe_inspector.clone()
     }
 
+    pub fn mem_check_state(&self) -> Arc<RwLock<MemCheckState>> {
+        self.mem_check.state.clone()
+    }
+
     pub fn add_memory_limit_callback<C>(&self, mut cb: C)
     where
         // XXX(Nyannyacha): Should we relax bounds a bit more?
-        C: FnMut() -> bool + Send + 'static,
+        C: FnMut(MemCheckState) -> bool + Send + 'static,
     {
-        let notify = self.mem_check_state.notify.clone();
-        let drop_token = self.mem_check_state.drop_token.clone();
+        let notify = self.mem_check.notify.clone();
+        let drop_token = self.mem_check.drop_token.clone();
+        let state = self.mem_check_state();
 
         drop(rt::SUPERVISOR_RT.spawn(async move {
             loop {
                 tokio::select! {
                     _ = notify.notified() => {
-                        if cb() {
+                        let state = tokio::task::spawn_blocking({
+                            let state = state.clone();
+                            move || {
+                                *state.read().unwrap()
+                            }
+                        }).await.unwrap();
+
+                        if cb(state) {
                             break;
                         }
                     }
@@ -852,21 +901,6 @@ impl DenoRuntime {
                 inspector_impl_ref.wait_for_session();
             }
         }
-    }
-
-    #[allow(clippy::wrong_self_convention)]
-    // TODO: figure out why rustc complains about this
-    #[allow(dead_code)]
-    fn to_value<T>(
-        &mut self,
-        global_value: &deno_core::v8::Global<deno_core::v8::Value>,
-    ) -> Result<T, AnyError>
-    where
-        T: DeserializeOwned + 'static,
-    {
-        let scope = &mut self.js_runtime.handle_scope();
-        let value = deno_core::v8::Local::new(scope, global_value.clone());
-        Ok(serde_v8::from_v8(scope, value)?)
     }
 }
 
@@ -898,7 +932,7 @@ extern "C" fn mem_check_gc_prologue_callback_fn(
     data: *mut c_void,
 ) {
     unsafe {
-        (*(data as *mut MemCheckState)).check(&mut *isolate);
+        (*(data as *mut MemCheck)).check(&mut *isolate);
     }
 }
 
@@ -907,13 +941,16 @@ mod test {
     use crate::deno_runtime::DenoRuntime;
     use crate::rt_worker::worker::DuplexStreamEntry;
     use deno_config::JsxImportSourceConfig;
-    use deno_core::{FastString, ModuleCodeString, PollEventLoopOptions};
+    use deno_core::error::AnyError;
+    use deno_core::{serde_json, serde_v8, v8, FastString, ModuleCodeString, PollEventLoopOptions};
     use sb_graph::emitter::EmitterFactory;
     use sb_graph::{generate_binary_eszip, EszipPayloadKind};
     use sb_workers::context::{
         MainWorkerRuntimeOpts, UserWorkerMsgs, UserWorkerRuntimeOpts, WorkerContextInitOpts,
         WorkerRuntimeOpts,
     };
+    use serde::de::DeserializeOwned;
+    use serde::Serialize;
     use serial_test::serial;
     use std::collections::HashMap;
     use std::fs;
@@ -926,12 +963,25 @@ mod test {
     use tokio::time::timeout;
     use url::Url;
 
+    use super::GetRuntimeContext;
+
+    impl<RuntimeContext> DenoRuntime<RuntimeContext> {
+        fn to_value_mut<T>(&mut self, global_value: &v8::Global<v8::Value>) -> Result<T, AnyError>
+        where
+            T: DeserializeOwned + 'static,
+        {
+            let scope = &mut self.js_runtime.handle_scope();
+            let value = v8::Local::new(scope, global_value.clone());
+            Ok(serde_v8::from_v8(scope, value)?)
+        }
+    }
+
     #[tokio::test]
     #[serial]
     async fn test_module_code_no_eszip() {
         let (worker_pool_tx, _) = mpsc::unbounded_channel::<UserWorkerMsgs>();
 
-        DenoRuntime::new(
+        DenoRuntime::<()>::new(
             WorkerContextInitOpts {
                 service_path: PathBuf::from("./test_cases/"),
                 no_module_cache: false,
@@ -978,7 +1028,7 @@ mod test {
 
         let eszip_code = bin_eszip.into_bytes();
 
-        let runtime = DenoRuntime::new(
+        let runtime = DenoRuntime::<()>::new(
             WorkerContextInitOpts {
                 service_path: PathBuf::from("./test_cases/"),
                 no_module_cache: false,
@@ -1008,10 +1058,7 @@ mod test {
         let main_mod_ev = rt.js_runtime.mod_evaluate(rt.main_module_id);
         let _ = rt
             .js_runtime
-            .run_event_loop(PollEventLoopOptions {
-                wait_for_inspector: false,
-                pump_v8_message_loop: true,
-            })
+            .run_event_loop(PollEventLoopOptions::default())
             .await;
 
         let read_is_even_global = rt
@@ -1026,7 +1073,7 @@ mod test {
                 ),
             )
             .unwrap();
-        let read_is_even = rt.to_value::<deno_core::serde_json::Value>(&read_is_even_global);
+        let read_is_even = rt.to_value_mut::<serde_json::Value>(&read_is_even_global);
         assert_eq!(read_is_even.unwrap().to_string(), "false");
         std::mem::drop(main_mod_ev);
     }
@@ -1045,7 +1092,7 @@ mod test {
 
         let eszip_code = binary_eszip.into_bytes();
 
-        let runtime = DenoRuntime::new(
+        let runtime = DenoRuntime::<()>::new(
             WorkerContextInitOpts {
                 service_path,
                 no_module_cache: false,
@@ -1075,10 +1122,7 @@ mod test {
         let main_mod_ev = rt.js_runtime.mod_evaluate(rt.main_module_id);
         let _ = rt
             .js_runtime
-            .run_event_loop(PollEventLoopOptions {
-                wait_for_inspector: false,
-                pump_v8_message_loop: true,
-            })
+            .run_event_loop(PollEventLoopOptions::default())
             .await;
 
         let read_is_even_global = rt
@@ -1093,18 +1137,21 @@ mod test {
                 ),
             )
             .unwrap();
-        let read_is_even = rt.to_value::<deno_core::serde_json::Value>(&read_is_even_global);
+        let read_is_even = rt.to_value_mut::<serde_json::Value>(&read_is_even_global);
         assert_eq!(read_is_even.unwrap().to_string(), "true");
         std::mem::drop(main_mod_ev);
     }
 
-    async fn create_runtime(
+    async fn create_runtime<C>(
         path: Option<&str>,
         env_vars: Option<HashMap<String, String>>,
         user_conf: Option<WorkerRuntimeOpts>,
         static_patterns: Vec<String>,
         maybe_jsx_import_source_config: Option<JsxImportSourceConfig>,
-    ) -> DenoRuntime {
+    ) -> DenoRuntime<C>
+    where
+        C: GetRuntimeContext,
+    {
         let (worker_pool_tx, _) = mpsc::unbounded_channel::<UserWorkerMsgs>();
 
         DenoRuntime::new(
@@ -1146,15 +1193,15 @@ mod test {
     #[tokio::test]
     #[serial]
     async fn test_main_runtime_creation() {
-        let mut runtime = create_runtime(None, None, None, vec![], None).await;
+        let mut runtime = create_runtime::<()>(None, None, None, vec![], None).await;
 
         {
             let scope = &mut runtime.js_runtime.handle_scope();
             let context = scope.get_current_context();
-            let inner_scope = &mut deno_core::v8::ContextScope::new(scope, context);
+            let inner_scope = &mut v8::ContextScope::new(scope, context);
             let global = context.global(inner_scope);
-            let edge_runtime_key: deno_core::v8::Local<deno_core::v8::Value> =
-                deno_core::serde_v8::to_v8(inner_scope, "EdgeRuntime").unwrap();
+            let edge_runtime_key: v8::Local<v8::Value> =
+                serde_v8::to_v8(inner_scope, "EdgeRuntime").unwrap();
             assert!(!global
                 .get(inner_scope, edge_runtime_key)
                 .unwrap()
@@ -1166,7 +1213,7 @@ mod test {
     #[tokio::test]
     #[serial]
     async fn test_user_runtime_creation() {
-        let mut runtime = create_runtime(
+        let mut runtime = create_runtime::<()>(
             None,
             None,
             Some(WorkerRuntimeOpts::UserWorker(Default::default())),
@@ -1178,10 +1225,10 @@ mod test {
         {
             let scope = &mut runtime.js_runtime.handle_scope();
             let context = scope.get_current_context();
-            let inner_scope = &mut deno_core::v8::ContextScope::new(scope, context);
+            let inner_scope = &mut v8::ContextScope::new(scope, context);
             let global = context.global(inner_scope);
-            let edge_runtime_key: deno_core::v8::Local<deno_core::v8::Value> =
-                deno_core::serde_v8::to_v8(inner_scope, "EdgeRuntime").unwrap();
+            let edge_runtime_key: v8::Local<v8::Value> =
+                serde_v8::to_v8(inner_scope, "EdgeRuntime").unwrap();
             assert!(global
                 .get(inner_scope, edge_runtime_key)
                 .unwrap()
@@ -1193,7 +1240,7 @@ mod test {
     #[serial]
     async fn test_main_rt_fs() {
         let mut main_rt =
-            create_runtime(None, Some(std::env::vars().collect()), None, vec![], None).await;
+            create_runtime::<()>(None, Some(std::env::vars().collect()), None, vec![], None).await;
 
         let global_value_deno_read_file_script = main_rt
             .js_runtime
@@ -1208,7 +1255,7 @@ mod test {
             )
             .unwrap();
         let fs_read_result =
-            main_rt.to_value::<deno_core::serde_json::Value>(&global_value_deno_read_file_script);
+            main_rt.to_value_mut::<serde_json::Value>(&global_value_deno_read_file_script);
         assert_eq!(
             fs_read_result.unwrap().as_str().unwrap(),
             "{\n  \"hello\": \"world\"\n}"
@@ -1218,13 +1265,14 @@ mod test {
     #[tokio::test]
     #[serial]
     async fn test_jsx_import_source() {
-        let mut main_rt = create_runtime(
+        let mut main_rt = create_runtime::<()>(
             Some("./test_cases/jsx-preact"),
             Some(std::env::vars().collect()),
             None,
             vec![],
             Some(JsxImportSourceConfig {
                 default_specifier: Some("https://esm.sh/preact".to_string()),
+                default_types_specifier: None,
                 module: "jsx-runtime".to_string(),
                 base_url: Url::from_file_path(std::env::current_dir().unwrap()).unwrap(),
             }),
@@ -1234,10 +1282,7 @@ mod test {
         let _main_mod_ev = main_rt.js_runtime.mod_evaluate(main_rt.main_module_id);
         let _ = main_rt
             .js_runtime
-            .run_event_loop(PollEventLoopOptions {
-                wait_for_inspector: false,
-                pump_v8_message_loop: true,
-            })
+            .run_event_loop(PollEventLoopOptions::default())
             .await;
 
         let global_value_deno_read_file_script = main_rt
@@ -1254,7 +1299,7 @@ mod test {
             .unwrap();
 
         let jsx_read_result =
-            main_rt.to_value::<deno_core::serde_json::Value>(&global_value_deno_read_file_script);
+            main_rt.to_value_mut::<serde_json::Value>(&global_value_deno_read_file_script);
         assert_eq!(
             jsx_read_result.unwrap().to_string(),
             r#"{"type":"div","props":{"children":"Hello"},"__k":null,"__":null,"__b":0,"__e":null,"__c":null,"__v":-1,"__i":-1,"__u":0}"#
@@ -1289,7 +1334,7 @@ mod test {
     #[tokio::test]
     #[serial]
     async fn test_static_fs() {
-        let mut user_rt = create_runtime(
+        let mut user_rt = create_runtime::<()>(
             None,
             None,
             Some(WorkerRuntimeOpts::UserWorker(Default::default())),
@@ -1308,7 +1353,7 @@ mod test {
             )
             .unwrap();
         let serde_deno_env = user_rt
-            .to_value::<deno_core::serde_json::Value>(&user_rt_execute_scripts)
+            .to_value_mut::<serde_json::Value>(&user_rt_execute_scripts)
             .unwrap();
 
         assert_eq!(
@@ -1320,7 +1365,7 @@ mod test {
     #[tokio::test]
     #[serial]
     async fn test_os_ops() {
-        let mut user_rt = create_runtime(
+        let mut user_rt = create_runtime::<()>(
             None,
             None,
             Some(WorkerRuntimeOpts::UserWorker(Default::default())),
@@ -1355,7 +1400,7 @@ mod test {
             )
             .unwrap();
         let serde_deno_env = user_rt
-            .to_value::<deno_core::serde_json::Value>(&user_rt_execute_scripts)
+            .to_value_mut::<serde_json::Value>(&user_rt_execute_scripts)
             .unwrap();
         assert_eq!(serde_deno_env.get("gid").unwrap().as_i64().unwrap(), 1000);
         assert_eq!(serde_deno_env.get("uid").unwrap().as_i64().unwrap(), 1000);
@@ -1447,8 +1492,9 @@ mod test {
     async fn test_os_env_vars() {
         std::env::set_var("Supa_Test", "Supa_Value");
         let mut main_rt =
-            create_runtime(None, Some(std::env::vars().collect()), None, vec![], None).await;
-        let mut user_rt = create_runtime(
+            create_runtime::<()>(None, Some(std::env::vars().collect()), None, vec![], None).await;
+
+        let mut user_rt = create_runtime::<()>(
             None,
             None,
             Some(WorkerRuntimeOpts::UserWorker(Default::default())),
@@ -1491,7 +1537,7 @@ mod test {
             )
             .unwrap();
         let serde_deno_env =
-            main_rt.to_value::<deno_core::serde_json::Value>(&main_deno_env_get_supa_test);
+            main_rt.to_value_mut::<serde_json::Value>(&main_deno_env_get_supa_test);
         assert_eq!(serde_deno_env.unwrap().as_str().unwrap(), "Supa_Value");
 
         // User does not have this env variable because it was not provided
@@ -1510,17 +1556,30 @@ mod test {
             )
             .unwrap();
         let user_serde_deno_env =
-            user_rt.to_value::<deno_core::serde_json::Value>(&user_deno_env_get_supa_test);
+            user_rt.to_value_mut::<serde_json::Value>(&user_deno_env_get_supa_test);
         assert!(user_serde_deno_env.unwrap().is_null());
     }
 
-    async fn create_basic_user_runtime(
+    async fn create_basic_user_runtime<C, T, U>(
         path: &str,
-        memory_limit_mb: u64,
-        worker_timeout_ms: u64,
+        memory_limit_mb: T,
+        worker_timeout_ms: U,
         static_patterns: &[&str],
-    ) -> DenoRuntime {
-        create_runtime(
+    ) -> DenoRuntime<C>
+    where
+        C: GetRuntimeContext,
+        T: Into<Option<u64>>,
+        U: Into<Option<u64>>,
+    {
+        let default_opt = UserWorkerRuntimeOpts::default();
+        let memory_limit_mb = memory_limit_mb
+            .into()
+            .unwrap_or(default_opt.memory_limit_mb);
+        let worker_timeout_ms = worker_timeout_ms
+            .into()
+            .unwrap_or(default_opt.worker_timeout_ms);
+
+        create_runtime::<C>(
             Some(path),
             None,
             Some(WorkerRuntimeOpts::UserWorker(UserWorkerRuntimeOpts {
@@ -1529,7 +1588,7 @@ mod test {
                 cpu_time_soft_limit_ms: 100,
                 cpu_time_hard_limit_ms: 200,
                 force_create: true,
-                ..Default::default()
+                ..default_opt
             })),
             static_patterns.iter().map(|it| String::from(*it)).collect(),
             None,
@@ -1540,7 +1599,7 @@ mod test {
     #[tokio::test]
     #[serial]
     async fn test_array_buffer_allocation_below_limit() {
-        let mut user_rt =
+        let mut user_rt: DenoRuntime =
             create_basic_user_runtime("./test_cases/array_buffers", 20, 1000, &[]).await;
 
         let (_tx, duplex_stream_rx) = mpsc::unbounded_channel::<DuplexStreamEntry>();
@@ -1549,13 +1608,13 @@ mod test {
         assert!(result.is_ok(), "expected no errors");
 
         // however, mem checker must be raised because it aggregates heap usage
-        assert!(user_rt.mem_check_state.is_exceeded());
+        assert!(user_rt.mem_check.state.read().unwrap().exceeded);
     }
 
     #[tokio::test]
     #[serial]
     async fn test_array_buffer_allocation_above_limit() {
-        let mut user_rt =
+        let mut user_rt: DenoRuntime =
             create_basic_user_runtime("./test_cases/array_buffers", 15, 1000, &[]).await;
 
         let (_tx, duplex_stream_rx) = mpsc::unbounded_channel::<DuplexStreamEntry>();
@@ -1579,14 +1638,14 @@ mod test {
     ) {
         let (_duplex_stream_tx, duplex_stream_rx) = mpsc::unbounded_channel::<DuplexStreamEntry>();
         let (callback_tx, mut callback_rx) = mpsc::unbounded_channel::<()>();
-        let mut user_rt =
+        let mut user_rt: DenoRuntime =
             create_basic_user_runtime(path, memory_limit_mb, worker_timeout_ms, static_patterns)
                 .await;
 
         let waker = user_rt.js_runtime.op_state().borrow().waker.clone();
         let handle = user_rt.js_runtime.v8_isolate().thread_safe_handle();
 
-        user_rt.add_memory_limit_callback(move || {
+        user_rt.add_memory_limit_callback(move |_| {
             handle.terminate_execution();
             waker.wake();
             callback_tx.send(()).unwrap();
@@ -1603,7 +1662,7 @@ mod test {
 
             callback_rx.recv().await.unwrap();
 
-            assert!(user_rt.mem_check_state.is_exceeded());
+            assert!(user_rt.mem_check.state.read().unwrap().exceeded);
         };
 
         if timeout(Duration::from_secs(10), wait_fut).await.is_err() {
@@ -1669,5 +1728,31 @@ mod test {
             1000,
         )
         .await;
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_user_worker_permission() {
+        struct Ctx;
+
+        impl GetRuntimeContext for Ctx {
+            fn get_runtime_context() -> impl Serialize {
+                serde_json::json!({
+                    "shouldBootstrapMockFnThrowError": true,
+                })
+            }
+        }
+
+        let mut user_rt: DenoRuntime<Ctx> = create_basic_user_runtime(
+            "./test_cases/user-worker-san-check",
+            None,
+            None,
+            &["./test_cases/user-worker-san-check/.blocklisted"],
+        )
+        .await;
+
+        let (_tx, duplex_stream_rx) = mpsc::unbounded_channel();
+
+        user_rt.run(duplex_stream_rx, None, None).await.0.unwrap();
     }
 }

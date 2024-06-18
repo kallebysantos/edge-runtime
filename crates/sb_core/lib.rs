@@ -3,6 +3,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
+use base_mem_check::WorkerHeapStatistics;
 use deno_core::error::AnyError;
 use deno_core::v8;
 use deno_core::OpState;
@@ -159,23 +160,23 @@ impl RuntimeMetricSource {
 
         extern "C" fn interrupt_fn(isolate: &mut v8::Isolate, data: *mut std::ffi::c_void) {
             let arg = unsafe { Box::<InterruptData>::from_raw(data as *mut _) };
-            let mut v8_heap_stats = v8::HeapStatistics::default();
-            let mut worker_heap_stats = WorkerHeapStatistics::default();
+            let mut v8_stats = v8::HeapStatistics::default();
+            let mut worker_stats = WorkerHeapStatistics::default();
 
-            isolate.get_heap_statistics(&mut v8_heap_stats);
+            isolate.get_heap_statistics(&mut v8_stats);
 
-            worker_heap_stats.total_heap_size = v8_heap_stats.total_heap_size();
-            worker_heap_stats.total_heap_executable = v8_heap_stats.total_heap_size_executable();
-            worker_heap_stats.total_physical_size = v8_heap_stats.total_physical_size();
-            worker_heap_stats.total_available_size = v8_heap_stats.total_available_size();
-            worker_heap_stats.total_global_handles_size = v8_heap_stats.total_global_handles_size();
-            worker_heap_stats.used_global_handles_size = v8_heap_stats.used_global_handles_size();
-            worker_heap_stats.used_heap_size = v8_heap_stats.used_heap_size();
-            worker_heap_stats.malloced_memory = v8_heap_stats.malloced_memory();
-            worker_heap_stats.external_memory = v8_heap_stats.external_memory();
-            worker_heap_stats.peak_malloced_memory = v8_heap_stats.peak_malloced_memory();
+            worker_stats.total_heap_size = v8_stats.total_heap_size();
+            worker_stats.total_heap_size_executable = v8_stats.total_heap_size_executable();
+            worker_stats.total_physical_size = v8_stats.total_physical_size();
+            worker_stats.total_available_size = v8_stats.total_available_size();
+            worker_stats.total_global_handles_size = v8_stats.total_global_handles_size();
+            worker_stats.used_global_handles_size = v8_stats.used_global_handles_size();
+            worker_stats.used_heap_size = v8_stats.used_heap_size();
+            worker_stats.malloced_memory = v8_stats.malloced_memory();
+            worker_stats.external_memory = v8_stats.external_memory();
+            worker_stats.peak_malloced_memory = v8_stats.peak_malloced_memory();
 
-            if let Err(err) = arg.heap_tx.send(worker_heap_stats) {
+            if let Err(err) = arg.heap_tx.send(worker_stats) {
                 error!("failed to send worker heap statistics: {:?}", err);
             }
         }
@@ -217,21 +218,6 @@ impl RuntimeMetricSource {
 
 #[derive(Debug, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
-struct WorkerHeapStatistics {
-    total_heap_size: usize,
-    total_heap_executable: usize,
-    total_physical_size: usize,
-    total_available_size: usize,
-    total_global_handles_size: usize,
-    used_global_handles_size: usize,
-    used_heap_size: usize,
-    malloced_memory: usize,
-    external_memory: usize,
-    peak_malloced_memory: usize,
-}
-
-#[derive(Debug, Serialize, Default)]
-#[serde(rename_all = "camelCase")]
 struct RuntimeHeapStatistics {
     main_worker_heap_stats: WorkerHeapStatistics,
     event_worker_heap_stats: Option<WorkerHeapStatistics>,
@@ -265,12 +251,12 @@ struct RuntimeMetrics {
     #[serde(flatten)]
     shared_stats: RuntimeSharedStatistics,
 }
-
+/*
 #[op2(fast)]
 fn op_is_terminal(state: &mut OpState, rid: u32) -> Result<bool, AnyError> {
     let handle = state.resource_table.get_handle(rid)?;
     Ok(handle.is_terminal())
-}
+}*/
 
 #[op2(fast)]
 fn op_stdin_set_raw(_state: &mut OpState, _is_raw: bool, _cbreak: bool) -> Result<(), AnyError> {
@@ -346,17 +332,35 @@ fn op_set_exit_code(_state: &mut OpState, #[smi] _code: i32) -> Result<(), AnyEr
     Ok(())
 }
 
+#[op2(fast)]
+fn op_set_raw(
+    _state: &mut OpState,
+    _rid: u32,
+    _is_raw: bool,
+    _cbreak: bool,
+) -> Result<(), AnyError> {
+    Ok(())
+}
+
+#[op2]
+#[serde]
+pub fn op_bootstrap_unstable_args(_state: &mut OpState) -> Vec<String> {
+    vec![]
+}
+
 deno_core::extension!(
     sb_core_main_js,
     ops = [
-        op_is_terminal,
+        /*op_is_terminal,*/
         op_stdin_set_raw,
         op_console_size,
         op_read_line_prompt,
         op_set_exit_code,
         op_runtime_metrics,
         op_schedule_mem_check,
-        op_runtime_memory_usage
+        op_runtime_memory_usage,
+        op_set_raw,
+        op_bootstrap_unstable_args
     ],
     esm_entry_point = "ext:sb_core_main_js/js/bootstrap.js",
     esm = [

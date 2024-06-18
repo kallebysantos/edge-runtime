@@ -9,14 +9,11 @@ for await (const data of eventManager) {
 				if (data.event.level === 'Error') {
 					console.error(data.event.msg);
 				} else {
-					console.log(data.event.msg);
+					console.dir(data.event.msg, { depth: Infinity });
 				}
 				break;
-			case 'UncaughtException':
-				console.error(data.event.exception);
-				break;
 			default:
-				console.log(data);
+				console.dir(data, { depth: Infinity });
 		}
 	}
 }
