@@ -14,5 +14,11 @@
     "name": "zero-shot-classification",
     "model_url": "https://huggingface.co/Xenova/distilbert-base-uncased-mnli/resolve/main/onnx/model_quantized.onnx?download=true",
     "tokenizer_url": "https://huggingface.co/Xenova/distilbert-base-uncased-mnli/resolve/main/tokenizer.json?download=true"
+  },
+  {
+    "name": "token-classification",
+    "model_url": "https://huggingface.co/Xenova/bert-base-multilingual-cased-ner-hrl/resolve/main/onnx/model_quantized.onnx?download=true",
+    "tokenizer_url": "https://huggingface.co/Xenova/bert-base-multilingual-cased-ner-hrl/resolve/main/tokenizer.json?download=true",
+    "config_url": "https://huggingface.co/Xenova/bert-base-multilingual-cased-ner-hrl/resolve/main/config.json?download=true"
   }
 ]
