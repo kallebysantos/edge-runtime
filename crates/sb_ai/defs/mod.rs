@@ -9,6 +9,7 @@ use crate::pipeline::{self, PipelineDefinition};
 
 mod feature_extraction;
 mod text_classification;
+mod token_classification;
 
 type InitializerReturnType = LocalBoxFuture<'static, Result<(), AnyError>>;
 type Initializer = Arc<
@@ -29,6 +30,9 @@ static DEFS: Lazy<HashMap<Cow<'static, str>, Initializer>> = Lazy::new(|| {
             pipeline::WithCUDAExecutionProvider<
                 text_classification::ZeroShotClassificationPipeline,
             >,
+        >(),
+        factory::<
+            pipeline::WithCUDAExecutionProvider<token_classification::TokenClassificationPipeline>,
         >(),
     ])
 });
