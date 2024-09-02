@@ -1,5 +1,5 @@
 /* Using default: Gte-small */
-const pipe = new Supabase.ai.Pipeline('supabase-gte');
+const pipe = new Supabase.ai.Pipeline('token-classification');
 
 /* Using custom model
 const pipe = new Supabase.ai.Pipeline(
@@ -12,9 +12,9 @@ const pipe = new Supabase.ai.Pipeline(
 // const pipe = new Supabase.ai.Pipeline('sentiment-analysis');
 
 Deno.serve(async (req: Request) => {
-  const { input } = await req.json();
+  const { input, options } = await req.json();
 
-  const output = await pipe.run(input);
+  const output = await pipe.run(input, options);
   return new Response(
     JSON.stringify(
       output,
