@@ -15,7 +15,7 @@ use crate::pipeline::{
 };
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "camelCase")]
 pub enum TokenClassificationAggregationStrategy {
     None,
     Simple,
@@ -23,7 +23,7 @@ pub enum TokenClassificationAggregationStrategy {
 }
 
 #[derive(Deserialize, Debug, Clone)]
-#[serde(default)]
+#[serde(default, rename_all = "camelCase")]
 pub struct TokenClassificationOptions {
     pub aggregation_strategy: TokenClassificationAggregationStrategy,
     pub ignore_labels: Vec<String>,
@@ -38,6 +38,7 @@ impl Default for TokenClassificationOptions {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RawClassifiedToken {
     pub entity: String,
     pub score: f32,
@@ -48,6 +49,7 @@ pub struct RawClassifiedToken {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ClassifiedTokenGroup {
     pub group_entity: String,
     pub score: f32,
