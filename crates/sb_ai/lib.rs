@@ -5,8 +5,11 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 mod onnx;
+mod onnxruntime;
 mod pipeline;
 mod tensor_ops;
+
+use onnxruntime::*;
 
 pub mod defs;
 pub use pipeline::compose_url_env_key;
@@ -19,12 +22,16 @@ deno_core::extension!(
         op_sb_ai_init_pipeline,
         op_sb_ai_run_pipeline,
         op_sb_ai_try_cleanup_unused_pipeline,
+        // ORT backend
+        op_sb_ai_ort_init_session,
+        op_sb_ai_ort_run_session,
     ],
     esm_entry_point = "ext:sb_ai/js/ai.js",
     esm = [
         "js/ai.js",
         "js/util/event_stream_parser.js",
-        "js/util/event_source_stream.js"
+        "js/util/event_source_stream.js",
+        "js/onnxruntime/onnx.js"
     ]
 );
 

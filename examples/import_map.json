@@ -1,6 +1,9 @@
 {
   "imports": {
     "oak": "https://deno.land/x/oak@v11.1.0/mod.ts",
-    "shared_cors": "./_shared/cors.ts"
+    "shared_cors": "./_shared/cors.ts",
+    "@xenova/transformers": "./_shared/transformers-js/transformers.js",
+    "@huggingface/jinja": "npm:@huggingface/jinja@0.2.2",
+    "onnxruntime-web": "npm:onnxruntime-web@1.14.0"
   }
 }

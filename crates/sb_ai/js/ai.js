@@ -1,5 +1,6 @@
-
+import 'ext:sb_ai/js/onnxruntime/onnx.js';
 import EventSourceStream from 'ext:sb_ai/js/util/event_source_stream.js';
+
 
 const core = globalThis.Deno.core;
 

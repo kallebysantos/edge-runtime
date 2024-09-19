@@ -1,25 +1,10 @@
-import { env, pipeline } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2';
-
-console.log(env);
+import { env, pipeline } from '@xenova/transformers';
 
 // Ensure we do not use browser cache
 env.useBrowserCache = false;
 env.allowLocalModels = false;
 
 const pipe = await pipeline('sentiment-analysis');
-
-/* Using default: Gte-small */
-// const pipe = new Supabase.ai.Pipeline('supabase-gte');
-
-/* Using custom model
-const pipe = new Supabase.ai.Pipeline(
-	'feature-extraction',
-	'paraphrase-multilingual-MiniLM-L12-v2',
-);
-*/
-
-// Using different tasks
-// const pipe = new Supabase.ai.Pipeline('sentiment-analysis');
 
 Deno.serve(async (req: Request) => {
   const { input } = await req.json();
