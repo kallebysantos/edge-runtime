@@ -39,27 +39,29 @@ class InferenceSession {
   }
 
   static async fromBuffer(modelBuffer) {
-    const {id, inputs, outputs} = await core.ops.op_sb_ai_ort_init_session(modelBuffer);
-
-    console.log('onnx.js fromBuffer:', {id, inputs, outputs});
+    console.time("init");
+    const [id, inputs, outputs] = await core.ops.op_sb_ai_ort_init_session(modelBuffer);
+    console.timeEnd("init");
 
     return new InferenceSession(id, inputs, outputs);
   }
 
   async run(inputs) {
-    console.log('onnx.js run: [inputs]', inputs);
+    console.time("run-start");
+    // console.log('onnx.js run: [inputs]', inputs);
 
     const outputs = await core.ops.op_sb_ai_ort_run_session(this.sessionId, JSON.parse(JSON.stringify(inputs)));
+    console.timeEnd("run-start");
 
     // Parse to Tensor
+    console.time("parse-start");
     for(const key in outputs) {
       if(Object.hasOwn(outputs, key)) {
         const {type, data, dims} = outputs[key];
         outputs[key] = new Tensor(type, data, dims);
       }
     }
-
-    console.log('onnx.js run: [outputs]', outputs);
+    console.timeEnd("parse-start");
 
     return outputs;
   }
