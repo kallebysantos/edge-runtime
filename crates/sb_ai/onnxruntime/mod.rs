@@ -1,47 +1,10 @@
 mod model_session;
+mod tensor;
 
-use core::panic;
-use std::{
-    borrow::Cow,
-    collections::HashMap,
-    hash::Hasher,
-    sync::{Arc, Mutex},
-};
-
-use anyhow::{anyhow, Result};
-use deno_core::{error::AnyError, op2, serde_json};
+use anyhow::Result;
+use deno_core::op2;
 use model_session::{ModelInfo, ModelSession};
-use once_cell::sync::Lazy;
-use ort::{
-    GraphOptimizationLevel, Session, SessionBuilder, SessionInputValue, TensorElementType, Value,
-    ValueType,
-};
-use serde::{Deserialize, Serialize};
-
-// TODO: Better tensor convertion
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(rename_all = "camelCase")]
-struct TensorInt64 {
-    #[serde(rename = "type")]
-    data_type: String,
-    dims: Vec<i64>,
-    data: Vec<i64>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(rename_all = "camelCase")]
-struct TensorFloat32 {
-    #[serde(rename = "type")]
-    data_type: String,
-    dims: Vec<i64>,
-    data: Vec<f32>,
-}
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(untagged)]
-enum Tensor {
-    Int64(TensorInt64),
-    Float32(TensorFloat32),
-}
+use tensor::{JsDynTensorValue, JsSessionInputs, JsSessionOutputs};
 
 #[op2]
 #[to_v8]
@@ -52,88 +15,30 @@ pub fn op_sb_ai_ort_init_session(#[buffer] model_bytes: &[u8]) -> Result<ModelIn
 }
 
 #[op2]
-#[serde]
+#[to_v8]
 pub fn op_sb_ai_ort_run_session(
     #[string] model_id: String,
-    #[serde] inputs: HashMap<String, Tensor>,
-) -> Result<HashMap<String, Tensor>> {
+    #[from_v8] input_values: JsSessionInputs,
+) -> Result<JsSessionOutputs> {
     let model = ModelSession::from_id(&model_id).unwrap();
-
-    println!("op_sb_ai_run_ort_session: loaded {model_id} -> {model:?}");
-
-    // Prepare input values
-    let mut inputs = inputs
-        .iter()
-        .map(|(key, value)| {
-            // TODO: Proper conversion
-            let raw_tensor = match value {
-                Tensor::Int64(value) => {
-                    Value::from_array((value.dims.to_owned(), value.data.to_owned())).unwrap()
-                }
-                Tensor::Float32(_) => {
-                    panic!("invalid TensorFloat32")
-                }
-            };
-
-            (key, raw_tensor)
-        })
-        .collect::<HashMap<_, _>>();
-
     let model_session = model.inner();
 
-    // Create input session map
-    let input_values = model_session
-        .inputs
-        .iter()
-        .map(|input| {
-            (
-                Cow::from(input.name.to_owned()),
-                SessionInputValue::from(inputs.remove(&input.name).unwrap()),
-            )
-        })
-        .collect::<Vec<_>>();
+    let input_values = input_values.to_ort_session_inputs(model.info().input_names.into_iter())?;
 
-    let outputs = model_session.run(input_values)?;
-    println!("op_sb_ai_run_ort_session: outputs {outputs:?}");
+    let mut outputs = model_session.run(input_values)?;
+    let mut output_values = vec![];
 
-    // Prepare outputs
-    let output_map = model_session
-        .outputs
-        .iter()
-        .map(|output| {
-            // TODO: Proper pattern matching
-            let ValueType::Tensor { ty, .. } = output.output_type else {
-                panic!("Invalid output_type");
-            };
-            let tensor = if let TensorElementType::Float32 = ty {
-                let (dims, data) = outputs
-                    .get(output.name.as_str())
-                    .unwrap()
-                    .try_extract_raw_tensor::<f32>()
-                    .unwrap();
+    // We need to `pop` over outputs to get it ownership, since keys are attached to 'model_session' lifetime
+    // and since we are sending tuples to JS, we don't need the model's output keys.
+    for _ in 0..outputs.len() {
+        let (_, ort_value) = outputs.pop_first().unwrap();
 
-                Tensor::Float32(TensorFloat32 {
-                    data_type: "f32".into(),
-                    dims,
-                    data: data.to_vec(),
-                })
-            } else {
-                let (dims, data) = outputs
-                    .get(&output.name.as_str())
-                    .unwrap()
-                    .try_extract_raw_tensor::<i64>()
-                    .unwrap();
+        let js_value = JsDynTensorValue(ort_value);
 
-                Tensor::Int64(TensorInt64 {
-                    data_type: "int64".into(),
-                    dims,
-                    data: data.to_vec(),
-                })
-            };
+        output_values.push(js_value);
+    }
 
-            (output.name.to_owned(), tensor)
-        })
-        .collect();
+    let outputs = JsSessionOutputs(output_values);
 
-    Ok(output_map)
+    Ok(outputs)
 }

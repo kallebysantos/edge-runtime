@@ -73,9 +73,9 @@ fn load_session_from_bytes(model_bytes: &[u8]) -> Result<Arc<ModelSession>> {
 
 #[derive(Debug, Clone)]
 pub struct ModelInfo {
-    id: String,
-    input_names: Vec<String>,
-    output_names: Vec<String>,
+    pub id: String,
+    pub input_names: Vec<String>,
+    pub output_names: Vec<String>,
 }
 
 #[derive(Debug)]
