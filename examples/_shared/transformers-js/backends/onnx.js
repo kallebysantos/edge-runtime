@@ -20,9 +20,6 @@
 // In either case, we select the default export if it exists, otherwise we use the named export.
 //import * as ONNX_NODE from 'onnxruntime-node';
 
-import * as ONNX_WEB from 'onnxruntime-web';
-
-/** @type {import('onnxruntime-web')} The ONNX runtime module. */
 export let ONNX;
 
 export const executionProviders = [

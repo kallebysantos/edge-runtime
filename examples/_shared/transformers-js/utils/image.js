@@ -13,7 +13,7 @@ import { env } from '../env.js';
 import { Tensor } from './tensor.js';
 
 // Will be empty (or not used) if running in browser or web-worker
-// import sharp from 'sharp';
+//import sharp from 'sharp';
 const sharp = undefined;
 
 const BROWSER_ENV = typeof self !== 'undefined';
