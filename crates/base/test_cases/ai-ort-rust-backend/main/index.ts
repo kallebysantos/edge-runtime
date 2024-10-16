@@ -1,11 +1,10 @@
-console.log('AI main function started');
+import * as path from "jsr:@std/path";
 
 Deno.serve(async (req: Request) => {
   console.log(req.url);
   const url = new URL(req.url);
   const { pathname } = url;
-  const path_parts = pathname.split("/");
-  const service_name = path_parts[1];
+  const service_name = pathname;
 
   if (!service_name || service_name === "") {
     const error = { msg: "missing function name in request" }
@@ -15,8 +14,7 @@ Deno.serve(async (req: Request) => {
     )
   }
 
-  const servicePath = `./test_cases/ai-ort-rust-backend/${service_name}`;
-  console.error(`serving the request with ${servicePath}`);
+  const servicePath = path.join("test_cases/ai-ort-rust-backend", pathname);
 
   const createWorker = async () => {
     const memoryLimitMb = 750;

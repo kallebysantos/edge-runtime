@@ -2,13 +2,13 @@ import { assertGreater, assertStringIncludes } from 'jsr:@std/assert';
 import {
   env,
   pipeline,
-} from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.0.0-alpha.20/dist/transformers.min.js';
+} from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.0.0-alpha.21/dist/transformers.min.js';
 
 // Ensure we do not use browser cache
 env.useBrowserCache = false;
 env.allowLocalModels = false;
 
-const pipe = await pipeline('text2text-generation');
+const pipe = await pipeline('text2text-generation', null, { device: 'auto' });
 
 Deno.serve(async () => {
   const input = 'Premise:  At my age you will probably have learnt one lesson. ' +

@@ -2,13 +2,13 @@ import { assertAlmostEquals, assertEquals } from 'jsr:@std/assert';
 import {
   env,
   pipeline,
-} from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.0.0-alpha.20/dist/transformers.min.js';
+} from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.0.0-alpha.21/dist/transformers.min.js';
 
 // Ensure we do not use browser cache
 env.useBrowserCache = false;
 env.allowLocalModels = false;
 
-const pipe = await pipeline('question-answering');
+const pipe = await pipeline('question-answering', null, { device: 'auto' });
 
 Deno.serve(async () => {
   const input = 'Who was Jim Henson?';
@@ -17,7 +17,7 @@ Deno.serve(async () => {
   const output = await pipe(input, context);
 
   assertEquals(output.answer, 'a nice puppet');
-  assertAlmostEquals(output.score, 0.80401875204943);
+  assertAlmostEquals(output.score, 0.7828674695785575);
 
   return new Response();
 });

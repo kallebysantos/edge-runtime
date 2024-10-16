@@ -2,13 +2,13 @@ import { assertEquals } from 'jsr:@std/assert';
 import {
   env,
   pipeline,
-} from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.0.0-alpha.20/dist/transformers.min.js';
+} from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.0.0-alpha.21/dist/transformers.min.js';
 
 // Ensure we do not use browser cache
 env.useBrowserCache = false;
 env.allowLocalModels = false;
 
-const pipe = await pipeline('translation_en_to_de');
+const pipe = await pipeline('translation', 'Xenova/opus-mt-en-de', { device: 'auto' });
 
 Deno.serve(async () => {
   const input = [
@@ -19,8 +19,8 @@ Deno.serve(async () => {
   const output = await pipe(input);
 
   const expected = [
-    { 'translation_text': 'Hallo, wie sind Sie?' },
-    { 'translation_text': 'Mein Name ist Maria.' },
+    { translation_text: "Hallo, wie geht's?" },
+    { translation_text: 'Mein Name ist Maria.' },
   ];
 
   assertEquals(output, expected);

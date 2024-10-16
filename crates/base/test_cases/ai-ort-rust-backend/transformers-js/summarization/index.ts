@@ -2,13 +2,13 @@ import { assertGreater, assertLess } from 'jsr:@std/assert';
 import {
   env,
   pipeline,
-} from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.0.0-alpha.20/dist/transformers.min.js';
+} from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.0.0-alpha.21/dist/transformers.min.js';
 
 // Ensure we do not use browser cache
 env.useBrowserCache = false;
 env.allowLocalModels = false;
 
-const pipe = await pipeline('summarization');
+const pipe = await pipeline('summarization', null, { device: 'auto' });
 
 Deno.serve(async () => {
   const input = [
@@ -18,10 +18,10 @@ Deno.serve(async () => {
 
   const output = await pipe(input);
 
-  assertLess(output[0].summary_text.length, 200);
+  assertLess(output[0].summary_text.length, input[0].length / 2);
   assertGreater(output[0].summary_text.length, 50);
 
-  assertLess(output[1].summary_text.length, 200);
+  assertLess(output[1].summary_text.length, input[0].length / 2);
   assertGreater(output[1].summary_text.length, 50);
 
   return new Response();

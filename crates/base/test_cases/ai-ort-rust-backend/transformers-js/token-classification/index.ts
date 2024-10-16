@@ -2,13 +2,13 @@ import { assertAlmostEquals, assertEquals } from 'jsr:@std/assert';
 import {
   env,
   pipeline,
-} from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.0.0-alpha.20/dist/transformers.min.js';
+} from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.0.0-alpha.21/dist/transformers.min.js';
 
 // Ensure we do not use browser cache
 env.useBrowserCache = false;
 env.allowLocalModels = false;
 
-const pipe = await pipeline('token-classification');
+const pipe = await pipeline('token-classification', null, { device: 'auto' });
 
 Deno.serve(async () => {
   const input = "My name is Kalleby and I'm from Brazil.";
@@ -20,22 +20,26 @@ Deno.serve(async () => {
   [
     {
       entity: 'B-PER',
-      score: 0.9937819242477417,
+      score: 0.9930744171142578,
+      index: 4,
       word: 'Kalle',
     },
     {
       entity: 'I-PER',
-      score: 0.9965004920959473,
+      score: 0.9974944591522217,
+      index: 5,
       word: '##by',
     },
     {
       entity: 'B-LOC',
-      score: 0.9998262524604797,
+      score: 0.9998322129249573,
+      index: 11,
       word: 'Brazil',
     },
   ].map((expected, idx) => {
     assertEquals(output[idx].entity, expected.entity);
     assertAlmostEquals(output[idx].score, expected.score);
+    assertEquals(output[idx].index, expected.index);
     assertEquals(output[idx].word, expected.word);
   });
 

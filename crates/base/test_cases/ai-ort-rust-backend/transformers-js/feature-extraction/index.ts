@@ -2,13 +2,13 @@ import { assertEquals, assertAlmostEquals } from 'jsr:@std/assert';
 import {
   env,
   pipeline,
-} from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.0.0-alpha.20/dist/transformers.min.js';
+} from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.0.0-alpha.21/dist/transformers.min.js';
 
 // Ensure we do not use browser cache
 env.useBrowserCache = false;
 env.allowLocalModels = false;
 
-const pipe = await pipeline('feature-extraction', 'supabase/gte-small'); // 384 dims model
+const pipe = await pipeline('feature-extraction', 'supabase/gte-small', { device: 'auto' }); // 384 dims model
 
 Deno.serve(async () => {
   const input = [
@@ -23,7 +23,7 @@ Deno.serve(async () => {
   assertEquals(output.dims.length, 2);
 
   // Comparing first 3 predictions
-  [-0.050141554325819016, -0.00658650230616331, 0.0057992227375507355]
+  [-0.050660304725170135, -0.006694655399769545, 0.003071750048547983]
     .map((expected, idx) => {
       assertAlmostEquals(output.data[idx], expected);
     });

@@ -2,13 +2,13 @@ import { assertAlmostEquals, assertEquals } from 'jsr:@std/assert';
 import {
   env,
   pipeline,
-} from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.0.0-alpha.20/dist/transformers.min.js';
+} from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.0.0-alpha.21/dist/transformers.min.js';
 
 // Ensure we do not use browser cache
 env.useBrowserCache = false;
 env.allowLocalModels = false;
 
-const pipe = await pipeline('zero-shot-classification');
+const pipe = await pipeline('zero-shot-classification', null, { device: 'auto' });
 
 Deno.serve(async () => {
   const sequences_to_classify = 'I love making pizza';
@@ -18,7 +18,7 @@ Deno.serve(async () => {
 
   assertEquals(output.labels, ['cooking', 'travel', 'dancing']);
 
-  [0.9986959357301496, 0.0007607675703779872, 0.0005432966994724542]
+  [0.9991624362472264, 0.0004726026797654259, 0.0003649610730082667]
     .map((expected, idx) => {
       assertAlmostEquals(output.scores[idx], expected);
     });

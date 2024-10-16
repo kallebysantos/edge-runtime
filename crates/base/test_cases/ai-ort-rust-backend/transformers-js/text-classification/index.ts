@@ -3,13 +3,13 @@ import { assertAlmostEquals, assertEquals } from 'jsr:@std/assert';
 import {
   env,
   pipeline,
-} from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.0.0-alpha.20/dist/transformers.min.js';
+} from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.0.0-alpha.21/dist/transformers.min.js';
 
 // Ensure we do not use browser cache
 env.useBrowserCache = false;
 env.allowLocalModels = false;
 
-const pipe = await pipeline('text-classification');
+const pipe = await pipeline('text-classification', null, { device: 'auto' });
 
 Deno.serve(async () => {
   const input = [
@@ -22,8 +22,8 @@ Deno.serve(async () => {
   assertEquals(output.length, 2);
 
   [
-    { label: 'POSITIVE', score: 0.9993272423744202 },
-    { label: 'NEGATIVE', score: 0.9997110962867737 },
+    { label: 'POSITIVE', score: 0.9987488985061646 },
+    { label: 'NEGATIVE', score: 0.9996954202651978 },
   ].map((expected, idx) => {
     assertEquals(output[idx].label, expected.label);
     assertAlmostEquals(output[idx].score, expected.score);
