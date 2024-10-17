@@ -1,4 +1,6 @@
 mod onnx;
+mod session;
+
 use anyhow::anyhow;
 use anyhow::{bail, Error};
 use deno_core::error::AnyError;
@@ -8,9 +10,10 @@ use log::error;
 use ndarray::{Array1, Array2, ArrayView3, Axis, Ix3};
 use ndarray_linalg::norm::{normalize, NormalizeAxis};
 use onnx::ensure_onnx_env_init;
-use ort::{inputs, GraphOptimizationLevel, Session};
+use ort::inputs;
+use session::create_session;
 use std::cell::RefCell;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
 use tokenizers::Tokenizer;
@@ -35,15 +38,6 @@ struct GteModelRequest {
     mean_pool: bool,
     normalize: bool,
     result_tx: mpsc::UnboundedSender<Result<Vec<f32>, Error>>,
-}
-
-fn create_session(model_file_path: PathBuf) -> Result<Session, Error> {
-    let session = Session::builder()?
-        .with_optimization_level(GraphOptimizationLevel::Level3)?
-        .with_intra_threads(1)?
-        .commit_from_file(model_file_path)?;
-
-    Ok(session)
 }
 
 fn mean_pool(last_hidden_states: ArrayView3<f32>, attention_mask: ArrayView3<i64>) -> Array2<f32> {
