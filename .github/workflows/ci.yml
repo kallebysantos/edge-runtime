@@ -32,7 +32,8 @@ jobs:
       - name: Install deps
         run: |
           sudo apt-get update
-          sudo apt-get -y install libblas-dev liblapack-dev libopenblas-dev
+          
+        #sudo apt-get -y install libblas-dev liblapack-dev libopenblas-dev
       - run: rustup show
       - uses: Swatinem/rust-cache@v2
       - run: ./scripts/clippy.sh
@@ -44,7 +45,8 @@ jobs:
       - name: Install deps
         run: |
           sudo apt-get update
-          sudo apt-get -y install libblas-dev liblapack-dev libopenblas-dev
+          
+        #sudo apt-get -y install libblas-dev liblapack-dev libopenblas-dev
 
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
