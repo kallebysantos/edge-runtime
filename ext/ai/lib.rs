@@ -97,7 +97,7 @@ async fn init_gte(state: Rc<RefCell<OpState>>) -> Result<(), Error> {
         let handle = handle.clone();
         move || {
             handle.block_on(async move {
-                load_session_from_url(Url::parse(consts::GTE_SMALL_MODEL_URL).unwrap()).await
+                load_session_from_url(Url::parse(consts::GTE_SMALL_MODEL_URL).unwrap(), None).await
             })
         }
     })
@@ -119,6 +119,7 @@ async fn init_gte(state: Rc<RefCell<OpState>>) -> Result<(), Error> {
                     utils::fetch_and_cache_from_url(
                         "tokenizer",
                         Url::parse(consts::GTE_SMALL_TOKENIZER_URL).unwrap(),
+                        None,
                         None,
                     )
                     .map_err(AnyError::from)
