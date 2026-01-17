@@ -259,6 +259,7 @@ mod supabase_startup_snapshot {
         deno::deno_fetch::Options {
           user_agent: user_agent.clone(),
           root_cert_store_provider: None,
+          file_fetch_handler: Rc::new(deno::deno_fetch::FsFetchHandler),
           ..Default::default()
         },
       ),
